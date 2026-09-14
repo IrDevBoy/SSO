@@ -1,0 +1,59 @@
+# ============================================================
+# UIAP — Unified Identity & Access Platform
+# Git ignore baseline (Python / Django)
+# Scope note: secrets and local artifacts only; no speculative
+# project-specific exclusions (P0.0 baseline).
+# ============================================================
+
+# --- Secrets / local environment (never commit; .env.example stays trackable) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- Python bytecode / packaging ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Test / coverage artifacts ---
+.pytest_cache/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# --- Build / distribution artifacts ---
+build/
+dist/
+wheels/
+*.egg
+
+# --- Django local artifacts ---
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# --- IDE / editor artifacts ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- OS artifacts ---
+.DS_Store
+Thumbs.db
