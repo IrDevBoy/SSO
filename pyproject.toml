@@ -63,3 +63,11 @@ dev = [
 # Virtual project: no build backend, nothing is packaged/installed from this repo.
 # Domain code (contexts/, core/, ...) is executed in-place from the venv in later phases.
 package = false
+
+[tool.pytest.ini_options]
+# P0.2: pytest-django wired to the test settings module. No DATABASES exists yet
+# (PostgreSQL arrives with the database-foundation sub-phase; SQLite is forbidden
+# by §51.1), so the skeleton tests must not touch the ORM.
+DJANGO_SETTINGS_MODULE = "config.settings.test"
+testpaths = ["tests/unit"]
+addopts = "-p no:cacheprovider"
