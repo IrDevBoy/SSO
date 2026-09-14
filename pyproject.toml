@@ -1,0 +1,65 @@
+# ============================================================================
+# UIAP — Unified Identity & Access Platform
+# pyproject.toml — P0.1 TOOLCHAIN BASELINE
+#
+# Scope (P0.1): dependency manifest for the architecture-mandated stack ONLY.
+#   - No Django project configuration, no INSTALLED_APPS, no packaging/build
+#     backend (this is a virtual project: [tool.uv] package = false).
+#   - No domain code, no models, no migrations — those are later sub-phases.
+#
+# Source of truth: ARCHITECTURE.md v1.0.1 (Approved — Frozen)
+#   - App. A: Python 3.13 (3.12 acceptable floor), Django 5.2 LTS,
+#     DRF + drf-spectacular (OpenAPI 3.1), PostgreSQL 17, Valkey (Redis-protocol),
+#     Celery 5 + kombu (Redis broker), test stack pytest (+hypothesis),
+#     testcontainers (PG/Valkey real).
+#   - §42 T-25: lockfiles + hashes, "no unpinned versions ever", pip-tools/uv.
+#     -> Exact pins + hashes live in uv.lock (the enforced truth); ranges here
+#        are compatibility bounds, never used unpinned.
+#   - §51.6 / App. A: SAST = semgrep + bandit; SCA/dependency audit (tool name
+#     not specified in doc -> pip-audit is a [Rec/MA] choice for that gate).
+# ============================================================================
+
+[project]
+name = "uiap"
+version = "0.0.0"
+description = "UIAP — Unified Identity & Access Platform (toolchain baseline; no domain implementation yet)"
+requires-python = ">=3.12,<3.14"  # 3.12 floor per App. A; <3.14 encodes the "no chasing 3.14/3.15" posture [Rec/MA]
+
+dependencies = [
+    # Web framework — App. A: Django 5.2 LTS (LTS series bound)
+    "Django>=5.2,<5.3",
+    # API toolkit — App. A: DRF + drf-spectacular (OpenAPI 3.1)
+    "djangorestframework>=3.16",
+    "drf-spectacular>=0.28",
+    # Async — App. A: Celery 5 + kombu (Redis broker); [redis] extra wires kombu's Redis transport
+    "celery[redis]>=5,<6",
+    # PostgreSQL 17 client — psycopg 3 (Django 5.2's modern backend)
+    # [Rec/MA]: the doc mandates PostgreSQL 17 but does not name the client library.
+    "psycopg[binary]>=3.2",
+    # Redis-protocol client for Valkey (§35.3, App. A "Valkey 8.x (Redis-protocol)")
+    # [Rec/MA]: doc names the server (Valkey), not the Python client; redis-py is MIT-licensed
+    # (the doc's license exclusion concerns the Redis *server*, see §51.6).
+    "redis>=5,<7",
+]
+
+[dependency-groups]
+dev = [
+    # Test stack — App. A / §51.1: pytest (+hypothesis), testcontainers (PG/Valkey real)
+    # pytest-django: [Rec/MA] — doc says "pytest"; Django integration fixture support is an
+    # implementation detail of the same gate.
+    "pytest>=8",
+    "pytest-django>=4.11",
+    "hypothesis>=6",
+    "testcontainers[postgres,redis]>=4",
+    # SAST — §51.6 / App. A: "semgrep + bandit"
+    "bandit>=1.8",
+    "semgrep>=1.100",
+    # SCA/dependency audit — §51.6 mandates the gate; tool name not specified in doc.
+    # [Rec/MA] choice: pip-audit (audits the lockfile's resolved set).
+    "pip-audit>=2.9",
+]
+
+[tool.uv]
+# Virtual project: no build backend, nothing is packaged/installed from this repo.
+# Domain code (contexts/, core/, ...) is executed in-place from the venv in later phases.
+package = false
