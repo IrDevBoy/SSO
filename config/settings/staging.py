@@ -1,32 +1,17 @@
 """
-Staging settings — P0.2 skeleton level.
+Staging settings — P0.3 level.
 
-Production-shaped: DEBUG hard-off, strict hosts, secret from the environment
-with fail-fast (§41.4: secrets never live in code; a missing secret is a boot
-error, not a fallback). No database/cache/Celery/security-middleware config at
-this level — later sub-phases.
+Production-shaped posture, unchanged by the P0.3 refactor (same guarantees,
+one shared helper): DEBUG hard-off, ALLOWED_HOSTS fail-closed from the
+environment, SECRET_KEY fail-fast on missing AND empty (§41.4).
 """
 
-import os
-
-from django.core.exceptions import ImproperlyConfigured
-
+from config.settings._env import env_host_list, required_secret
 from config.settings.base import *  # noqa: F401,F403
 
-DEBUG = False
+DEBUG = False  # hard-off; no environment variable can change this
 
-ALLOWED_HOSTS = [h.strip() for h in os.environ.get("UIAP_ALLOWED_HOSTS", "").split(",") if h.strip()]
+# Fail-closed: unset or set-but-empty UIAP_ALLOWED_HOSTS -> no hosts allowed.
+ALLOWED_HOSTS = env_host_list("UIAP_ALLOWED_HOSTS", default=[])
 
-# Fail fast: staging boots with a real secret or not at all (§41.4).
-# Missing AND empty are both boot errors — an empty string is not a secret.
-try:
-    SECRET_KEY = os.environ["UIAP_SECRET_KEY"]
-except KeyError as exc:
-    raise ImproperlyConfigured(
-        "UIAP_SECRET_KEY is not set. Staging must receive the secret via "
-        "environment/KMS/Vault injection — there is no code-level fallback (§41.4)."
-    ) from exc
-if not SECRET_KEY:
-    raise ImproperlyConfigured(
-        "UIAP_SECRET_KEY is empty. An empty secret is not a secret — refusing to boot (§41.4)."
-    )
+SECRET_KEY = required_secret("UIAP_SECRET_KEY")

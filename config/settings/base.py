@@ -1,9 +1,15 @@
 """
-UIAP base settings — P0.2 SKELETON LEVEL ONLY.
+UIAP base settings — P0.3 level.
 
-Scope discipline (P0.2): this module intentionally contains ONLY what a valid,
-executable Django project needs. Explicitly ABSENT (each lands in its own
-sub-phase per the §60 phase plan):
+Configuration contract (§54.1): non-secret parameters arrive as environment
+variables; secrets NEVER live in code and arrive via KMS/Vault injection at
+runtime (§41.4) — production settings fail fast rather than fall back.
+
+Two deliberately separate contracts (P0.3 decisions):
+  - UIAP_ENV               = environment identity (validated; identity ONLY)
+  - DJANGO_SETTINGS_MODULE = Django settings selection (the ONLY selector)
+
+Explicitly ABSENT (each lands in its own later sub-phase per the §60 plan):
 
   - DATABASES     -> database-foundation sub-phase (§34: schema-per-context,
                      5 DB roles, psycopg) — no DB touches the skeleton.
@@ -15,16 +21,21 @@ sub-phase per the §60 phase plan):
                     middleware is a later sub-phase.
   - INSTALLED_APPS contains ONLY Django's minimum-boot set. The bounded
     contexts (§9.1) are NOT registered — app registration happens per
-    context when each is actually built (P0.2 adds no placeholder apps).
-
-Secrets (§41.4): NEVER hard-coded, never defaulted to a real value in code.
-Production values arrive via environment/KMS/Vault injection; production
-settings fail fast rather than fall back (see prod.py).
+    context when each is actually built.
 """
 
+import os
 from pathlib import Path
 
+from config.settings._env import validate_environment
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
+
+# --- Environment identity (G-2; §54.1 per-env app configs) -------------------
+# Identity ONLY — never a settings selector. Unset/empty is tolerated (no
+# architecture mandate requires it); a present-but-unknown value is a hard,
+# clear configuration error rather than silent tolerance.
+UIAP_ENV = validate_environment(os.environ.get("UIAP_ENV"))
 
 # --- Applications: Django minimum-boot set ONLY -----------------------------
 # django.contrib.admin is deliberately ABSENT (App. A: admin-free platform;
@@ -77,7 +88,8 @@ STATIC_URL = "static/"
 # --- Default auto field -----------------------------------------------------
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# --- Environment-sourced flags (safe dev-only defaults; prod overrides) -----
-# DEBUG/ALLOWED_HOSTS are environment concerns (§54.1); base provides no
-# opinionated secret material at all.
-DEBUG = False  # base is the conservative baseline; dev.py turns it on
+# --- Environment-sourced flags ----------------------------------------------
+# DEBUG/ALLOWED_HOSTS are per-environment concerns (§54.1): base is the
+# conservative baseline (off), dev relaxes via its env contract, staging/prod
+# hard-code the safe values. Base provides no secret material at all (§41.4).
+DEBUG = False
