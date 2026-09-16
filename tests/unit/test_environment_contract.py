@@ -242,6 +242,14 @@ class TestProductionSafety:
 
     def _probe(self, module: str, extra_env: dict[str, str]) -> subprocess.CompletedProcess:
         env = {"UIAP_SECRET_KEY": self._SECRET}
+        # P0.4 (ADR 0001): staging/prod are fail-closed on DB configuration;
+        # these probes target the SECRET paths, so supply the full (dummy,
+        # non-secret) DB contract to keep the variable under test decisive.
+        env.setdefault("UIAP_DB_HOST", "db.ci.internal")
+        env.setdefault("UIAP_DB_PORT", "5432")
+        env.setdefault("UIAP_DB_NAME", "uiap")
+        env.setdefault("UIAP_DB_USER", "uiap_app")
+        env.setdefault("UIAP_DB_PASSWORD", "ci-verification-dummy-password")
         env.update(extra_env)
         return run_py(
             "import importlib\n"
@@ -344,7 +352,12 @@ def result_ok(r: subprocess.CompletedProcess) -> bool:
 
 
 class TestTemplateConsistency:
-    """Every ACTIVE variable in .env.example has a real reader in code."""
+    """Every ACTIVE variable in .env.example has a real reader in code.
+
+    P0.4 (ADR 0001): the UIAP_DB_* variables moved from RESERVED to ACTIVE
+    and UIAP_DB_SSLMODE was added; the DB contract now has a real reader in
+    config/settings/base.py (approved minimal deviation to this P0.3 file).
+    """
 
     TEMPLATE = REPO_ROOT / ".env.example"
 
@@ -355,11 +368,19 @@ class TestTemplateConsistency:
         "DJANGO_ALLOWED_HOSTS": "config/settings/dev.py",
         "UIAP_ALLOWED_HOSTS": "config/settings/staging.py",  # also prod.py (same helper)
         "UIAP_SECRET_KEY": "config/settings/prod.py",  # also staging.py (same helper)
+        # P0.4 database foundation (ADR 0001): UIAP_DB_* promoted from RESERVED
+        # to ACTIVE — base.py now reads them for DATABASES; UIAP_DB_SSLMODE is
+        # newly declared. (Approved scope deviation, recorded in the ADR.)
+        "UIAP_DB_HOST": "config/settings/base.py",
+        "UIAP_DB_PORT": "config/settings/base.py",
+        "UIAP_DB_NAME": "config/settings/base.py",
+        "UIAP_DB_USER": "config/settings/base.py",
+        "UIAP_DB_PASSWORD": "config/settings/base.py",
+        "UIAP_DB_SSLMODE": "config/settings/base.py",
     }
 
     RESERVED_VARS = {
         "UIAP_ISSUER",
-        "UIAP_DB_HOST", "UIAP_DB_PORT", "UIAP_DB_NAME", "UIAP_DB_USER", "UIAP_DB_PASSWORD",
         "UIAP_CACHE_URL",
         "UIAP_VAULT_ADDR", "UIAP_VAULT_TOKEN",
         "UIAP_OTEL_EXPORTER_OTLP_ENDPOINT",

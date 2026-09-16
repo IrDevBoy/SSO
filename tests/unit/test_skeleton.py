@@ -72,6 +72,14 @@ class TestEnvironmentSettingsContract:
         env = dict(os.environ)
         env.update(extra_env)
         env.pop("DJANGO_SETTINGS_MODULE", None)  # isolated module import
+        # P0.4 (ADR 0001): staging/prod are fail-closed on DB configuration,
+        # so these secret-path tests must supply the full (dummy, non-secret)
+        # DB contract — the DB endpoint is now part of the same §41.4 posture.
+        env.setdefault("UIAP_DB_HOST", "db.ci.internal")
+        env.setdefault("UIAP_DB_PORT", "5432")
+        env.setdefault("UIAP_DB_NAME", "uiap")
+        env.setdefault("UIAP_DB_USER", "uiap_app")
+        env.setdefault("UIAP_DB_PASSWORD", "ci-verification-dummy-password")
         return subprocess.run(
             [sys.executable, "-c", f"import {module}"],
             env=env,

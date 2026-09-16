@@ -65,9 +65,14 @@ dev = [
 package = false
 
 [tool.pytest.ini_options]
-# P0.2: pytest-django wired to the test settings module. No DATABASES exists yet
-# (PostgreSQL arrives with the database-foundation sub-phase; SQLite is forbidden
-# by §51.1), so the skeleton tests must not touch the ORM.
+# P0.2: pytest-django wired to the test settings module. P0.4 (ADR 0001) adds
+# the `integration` marker: the integration tier runs against a REAL
+# PostgreSQL 17 via testcontainers (never SQLite, §51.1) and is excluded from
+# the default unit run — Docker-requiring tests must never block the normal
+# unit suite. Run the integration tier explicitly: pytest -m integration.
 DJANGO_SETTINGS_MODULE = "config.settings.test"
 testpaths = ["tests/unit"]
-addopts = "-p no:cacheprovider"
+addopts = "-p no:cacheprovider -m 'not integration'"
+markers = [
+    "integration: requires Docker + a real PostgreSQL 17 testcontainer (excluded from the default unit run)",
+]
