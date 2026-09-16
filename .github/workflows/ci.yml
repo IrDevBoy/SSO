@@ -1,0 +1,123 @@
+# ============================================================================
+# UIAP — Unified Identity & Access Platform
+# P0.5.1 — Base CI Pipeline (Phase 0 / CI Foundation)
+#
+# Scope of THIS workflow (per approved P0.5.1 subphase):
+#   - unit tier (no DB, no Docker application containers) — §51.1
+#   - Django checks matrix across all four settings modules — ADR 0001
+#   - no-SQLite architecture gate — §51.1 ("testcontainers, no sqlite stand-ins")
+#   - lockfile-only dependency installation — §42 T-25 ("no unpinned versions")
+#   - least-privilege token, no secrets, no third-party code execution
+#
+# Explicitly OUT of scope here (later subphases): integration job (P0.5.2),
+# security/SAST/SCA jobs (P0.5.3), SBOM/image/cosign (container-scoped AF),
+# OpenAPI/event-schema/conformance gates (artifact does not exist yet).
+# ============================================================================
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    # pull_request_target is deliberately NOT used: no workflow needs secrets
+    # or write access, and untrusted fork PRs must not gain either.
+
+permissions:
+  contents: read
+
+concurrency:
+  # Cancel superseded runs on the same ref (branch or PR). Cancelled runs are
+  # reported as cancelled (not failed), so required-check semantics on the
+  # latest run of a ref are unaffected.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Unit tier: the 86-test suite (includes the no-SQLite and env-contract
+  # architecture/contract tests). No database, no Docker application container.
+  # ---------------------------------------------------------------------------
+  unit:
+    name: unit (no DB, no Docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+
+      - name: Install uv (pinned, cache keyed to lockfile)
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          # Cache is keyed to uv.lock only; it caches uv's download cache and
+          # can never substitute for the lockfile — the sync step below still
+          # runs with --locked and fails closed on any drift.
+          cache-dependency-glob: uv.lock
+
+      - name: Sync dependencies (lockfile-only)
+        run: uv sync --locked
+
+      - name: Gate — no SQLite anywhere in implementation
+        # Visibility twin of tests/unit/test_database_settings_contract.py::
+        # TestDatabaseBackendContract::test_no_sqlite_engine_anywhere_in_settings
+        # (§51.1: testcontainers, no sqlite stand-ins). Scopes match the test.
+        run: |
+          if grep -rn "django.db.backends.sqlite\|import sqlite3\|sqlite3.connect" config core manage.py; then
+            echo "::error::SQLite engine/usage reference found in implementation (§51.1 forbids SQLite)"
+            exit 1
+          fi
+
+      - name: Unit tests
+        run: uv run pytest tests/unit -q
+
+  # ---------------------------------------------------------------------------
+  # Django checks matrix: all four settings modules must pass `manage.py check`.
+  # staging/prod are fail-closed on DB configuration (ADR 0001 / §41.4), so the
+  # matrix supplies the SAME dummy, non-secret CI values used by the local
+  # contract tests (tests/unit/test_database_settings_contract.py). These are
+  # NOT credentials: they exist only so the hardened settings modules reach
+  # their code paths. No real endpoint, secret, or credential appears here.
+  # ---------------------------------------------------------------------------
+  checks:
+    name: django check (${{ matrix.settings }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - settings: config.settings.dev
+            uiap-env: dev
+          - settings: config.settings.test
+            uiap-env: test
+          - settings: config.settings.staging
+            uiap-env: staging
+          - settings: config.settings.prod
+            uiap-env: prod
+    env:
+      DJANGO_SETTINGS_MODULE: ${{ matrix.settings }}
+      UIAP_ENV: ${{ matrix.uiap-env }}
+      UIAP_SECRET_KEY: ci-verification-dummy-not-a-real-secret
+      UIAP_DB_HOST: db.ci.internal
+      UIAP_DB_PORT: "5432"
+      UIAP_DB_NAME: uiap
+      UIAP_DB_USER: uiap_app
+      UIAP_DB_PASSWORD: ci-verification-dummy-password
+    steps:
+      - name: Checkout
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+
+      - name: Install uv (pinned, cache keyed to lockfile)
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Sync dependencies (lockfile-only)
+        run: uv sync --locked
+
+      - name: Django system checks
+        run: uv run python manage.py check
