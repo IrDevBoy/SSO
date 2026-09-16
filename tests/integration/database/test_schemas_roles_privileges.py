@@ -18,6 +18,10 @@ Run against a REAL PostgreSQL 17 (testcontainers). Gates covered here:
 
 import pytest
 
+# Opt-in tier marker: pyproject excludes `integration` from the default run;
+# pytest reads `pytestmark` only from test modules (P0.5.2 marker fix).
+pytestmark = pytest.mark.integration
+
 ARCH_SCHEMAS = {
     "uiap_identity", "uiap_access", "uiap_profile", "uiap_address",
     "uiap_security", "uiap_audit", "uiap_notification", "uiap_org",

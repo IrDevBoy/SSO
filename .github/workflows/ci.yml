@@ -1,17 +1,20 @@
 # ============================================================================
 # UIAP — Unified Identity & Access Platform
 # P0.5.1 — Base CI Pipeline (Phase 0 / CI Foundation)
+# P0.5.2 — Integration CI (real PostgreSQL 17 via the repository's
+#          testcontainers harness — no GitHub services:, no new actions)
 #
-# Scope of THIS workflow (per approved P0.5.1 subphase):
+# Scope of THIS workflow:
 #   - unit tier (no DB, no Docker application containers) — §51.1
 #   - Django checks matrix across all four settings modules — ADR 0001
 #   - no-SQLite architecture gate — §51.1 ("testcontainers, no sqlite stand-ins")
 #   - lockfile-only dependency installation — §42 T-25 ("no unpinned versions")
+#   - integration tier on a REAL PostgreSQL 17 (P0.5.2) — §51.1 / ADR 0001
 #   - least-privilege token, no secrets, no third-party code execution
 #
-# Explicitly OUT of scope here (later subphases): integration job (P0.5.2),
-# security/SAST/SCA jobs (P0.5.3), SBOM/image/cosign (container-scoped AF),
-# OpenAPI/event-schema/conformance gates (artifact does not exist yet).
+# Explicitly OUT of scope here (later subphases): security/SAST/SCA jobs
+# (P0.5.3), SBOM/image/cosign (container-scoped AF), OpenAPI/event-schema/
+# conformance gates (artifact does not exist yet).
 # ============================================================================
 
 name: CI
@@ -121,3 +124,39 @@ jobs:
 
       - name: Django system checks
         run: uv run python manage.py check
+
+  # ---------------------------------------------------------------------------
+  # Integration tier (P0.5.2): the 43-test suite against a REAL PostgreSQL 17,
+  # driven entirely by the repository's own testcontainers harness
+  # (tests/integration/conftest.py): it boots a throwaway postgres:17
+  # container, applies the repository's real bootstrap SQL
+  # (deploy/db/bootstrap/001_schemas_roles.sql), runs ONLY the targeted
+  # `migrate outbox` as the uiap_migration role (ADR 0001 A-3/A-5), and tears
+  # the container down at session end. The workflow adds no services:, no
+  # parallel bootstrap, no manual migrations, no credentials — the harness is
+  # the single source of database truth (§51.1: real PG, never SQLite).
+  # ---------------------------------------------------------------------------
+  integration:
+    name: integration (real PostgreSQL 17)
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+
+      - name: Install uv (pinned, cache keyed to lockfile)
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Sync dependencies (lockfile-only)
+        run: uv sync --locked
+
+      - name: Docker preflight (fail fast if the runner has no Docker)
+        run: docker info --format "docker server {{.ServerVersion}} available"
+
+      - name: Integration tests (real PostgreSQL 17)
+        run: uv run pytest tests/integration -m integration -q

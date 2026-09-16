@@ -20,6 +20,10 @@ import sys
 
 import pytest
 
+# Opt-in tier marker: pyproject excludes `integration` from the default run;
+# pytest reads `pytestmark` only from test modules (P0.5.2 marker fix).
+pytestmark = pytest.mark.integration
+
 # NOTE: deliberately NO pytest-django django_db marker anywhere here — these
 # tests drive the real database through psycopg and subprocess migrations, so
 # pytest-django's test-DB creation must never activate (it would target

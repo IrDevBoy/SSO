@@ -27,9 +27,11 @@ from pathlib import Path
 import pytest
 
 # The whole tier is opt-in via the `integration` marker (pyproject: excluded
-# from the default run). Applying it here marks every test collected under
-# tests/integration without touching each module.
-pytestmark = pytest.mark.integration
+# from the default run). pytest reads `pytestmark` only from TEST modules —
+# it cannot be applied transitively from conftest.py — so each test module
+# under tests/integration declares the marker itself (P0.5.2 marker fix).
+# The previous `pytestmark = pytest.mark.integration` here was inert: conftest
+# is not a test module, so it never marked anything (behavior unchanged).
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BOOTSTRAP_SQL = REPO_ROOT / "deploy" / "db" / "bootstrap" / "001_schemas_roles.sql"
