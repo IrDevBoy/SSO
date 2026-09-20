@@ -229,4 +229,11 @@ jobs:
         # §41.4 secret-scan (gitleaks-class), action-side per the approved
         # P0.5 CI-foundation decision (no dependency added to pyproject/
         # uv.lock). SHA resolved live from the GitHub API (v3.0.0).
+        # GITHUB_TOKEN is GitHub-provided (not a new secret; permissions stay
+        # `contents: read`) and is part of the action's documented contract:
+        # it authenticates the user-type lookup that decides whether a
+        # license is required (personal accounts need none). Unauthenticated
+        # lookups rate-limit and fail closed.
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
