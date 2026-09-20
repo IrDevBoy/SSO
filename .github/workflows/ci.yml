@@ -3,6 +3,10 @@
 # P0.5.1 — Base CI Pipeline (Phase 0 / CI Foundation)
 # P0.5.2 — Integration CI (real PostgreSQL 17 via the repository's
 #          testcontainers harness — no GitHub services:, no new actions)
+# P0.5.3 — Security CI gates: SAST (bandit MEDIUM+ threshold, semgrep
+#          p/python fail-closed), SCA (pip-audit --strict on the locked
+#          environment), secret scan (gitleaks, full history, no baseline)
+#          — §51.4 / §41.4 / §42 T-25
 #
 # Scope of THIS workflow:
 #   - unit tier (no DB, no Docker application containers) — §51.1
@@ -12,9 +16,9 @@
 #   - integration tier on a REAL PostgreSQL 17 (P0.5.2) — §51.1 / ADR 0001
 #   - least-privilege token, no secrets, no third-party code execution
 #
-# Explicitly OUT of scope here (later subphases): security/SAST/SCA jobs
-# (P0.5.3), SBOM/image/cosign (container-scoped AF), OpenAPI/event-schema/
-# conformance gates (artifact does not exist yet).
+# Explicitly OUT of scope here (later phases): SBOM/image/cosign
+# (container-scoped AF), OpenAPI/event-schema/conformance gates (artifact
+# does not exist yet).
 # ============================================================================
 
 name: CI
@@ -160,3 +164,69 @@ jobs:
 
       - name: Integration tests (real PostgreSQL 17)
         run: uv run pytest tests/integration -m integration -q
+
+  # ---------------------------------------------------------------------------
+  # Security tier (P0.5.3): SAST (§51.4: bandit + semgrep), SCA (§42 T-25:
+  # pip-audit against the lockfile-resolved environment), secret scanning
+  # (§41.4: gitleaks-class). Runs in PARALLEL with unit/checks/integration —
+  # a security finding must never wait behind the test queue. Every step is
+  # fail-closed: any non-zero exit (findings, malformed config, unavailable
+  # ruleset or vulnerability DB, execution error) fails the job. There is no
+  # `|| true`, no continue-on-error, no baseline file, and no ignore of any
+  # kind — a tool that cannot scan must FAIL, never silently pass.
+  # ---------------------------------------------------------------------------
+  security:
+    name: security (SAST + SCA + secret scan)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout (full history for the secret scan)
+        uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3 # v6.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Install uv (pinned, cache keyed to lockfile)
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Sync dependencies (lockfile-only)
+        run: uv sync --locked
+
+      - name: Bandit (SAST) — fail on MEDIUM+ severity and confidence
+        # §51.4 SAST. Scope = the tracked implementation surface. The MEDIUM+
+        # threshold keeps documented false positives (e.g. the Django-docs
+        # test SECRET_KEY, a LOW finding) out of the gate without any baseline
+        # file, any source comment, or any suppression — every MEDIUM+ finding
+        # fails the job. Tightening (dropping the threshold) is a future
+        # hardening item, not a P0.5.3 gate.
+        run: |
+          uv run bandit -r config core manage.py -q \
+            --severity-level medium \
+            --confidence-level medium
+
+      - name: Semgrep (SAST) — p/python, fail-closed (--error)
+        # §51.4 SAST. Controlled deterministic ruleset (no --config auto).
+        # --error fails the step on ERROR-severity findings; a registry fetch
+        # failure or execution error exits non-zero and fails the job too.
+        run: |
+          uv run semgrep scan \
+            --config p/python \
+            --metrics=off \
+            --error \
+            --quiet \
+            config core manage.py
+
+      - name: pip-audit (SCA) — strict audit of the locked environment
+        # §42 T-25: dependency audit against the lockfile-resolved set (the
+        # sync step above guarantees the environment == uv.lock). --strict
+        # keeps DB/network/execution errors fatal — no silent pass.
+        run: uv run pip-audit --strict
+
+      - name: Gitleaks (secret scan) — full history, no baseline
+        # §41.4 secret-scan (gitleaks-class), action-side per the approved
+        # P0.5 CI-foundation decision (no dependency added to pyproject/
+        # uv.lock). SHA resolved live from the GitHub API (v3.0.0).
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
