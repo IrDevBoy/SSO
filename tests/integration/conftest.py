@@ -9,9 +9,10 @@ never a developer database, never production). The fixture:
   2. executes the repository's real CI-owned bootstrap SQL
      (deploy/db/bootstrap/001_schemas_roles.sql) exactly as CI would,
   3. points DJANGO_SETTINGS_MODULE at config.settings.dev with UIAP_DB_* set
-     to the container, then runs ONLY the targeted ``migrate outbox``
-     (RULE 9: generic `migrate` is forbidden — it would touch auth/
-     contenttypes, which must never materialize),
+     to the container, then runs ONLY the targeted migrations —
+     ``migrate outbox`` (P0.4) and ``migrate identity`` (P0.6.1)
+     (RULE 9 discipline: generic `migrate` is forbidden — it would touch
+     auth/contenttypes, which must never materialize),
   4. hands tests a psycopg connection (as the uiap_migration principal) for
      inventory/privilege assertions.
 
@@ -148,6 +149,8 @@ def migrated_db(bootstrapped_db):
 
     r = _manage("migrate", "outbox", "--noinput")
     assert r.returncode == 0, f"migrate outbox failed:\n{r.stdout}\n{r.stderr}"
+    r = _manage("migrate", "identity", "--noinput")
+    assert r.returncode == 0, f"migrate identity failed:\n{r.stdout}\n{r.stderr}"
     yield {**env, "manage": _manage, "manage_env": run_env, "repo_root": REPO_ROOT}
 
 

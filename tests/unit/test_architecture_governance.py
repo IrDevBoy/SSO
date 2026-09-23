@@ -84,7 +84,12 @@ def context_set_errors(root: Path) -> list[str]:
     contexts_dir = root / "contexts"
     if not contexts_dir.is_dir():
         return ["contexts/ directory is missing"]
-    actual = sorted(p.name for p in contexts_dir.iterdir() if p.is_dir())
+    # Bytecode/tooling cache directories are not context packages.
+    actual = sorted(
+        p.name
+        for p in contexts_dir.iterdir()
+        if p.is_dir() and p.name != "__pycache__"
+    )
     expected = sorted(CANONICAL_CONTEXTS)
     missing = sorted(set(expected) - set(actual))
     extra = sorted(set(actual) - set(expected))

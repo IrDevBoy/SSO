@@ -31,9 +31,10 @@ Explicitly ABSENT (each lands in its own later sub-phase per the §60 plan):
   - Rate limiting -> rate-limit sub-phase (§24.6).
   - Middleware    -> framework defaults only (see below); real security
                     middleware is a later sub-phase.
-  - INSTALLED_APPS carries ONLY the Django minimum-boot set plus the outbox
-    infrastructure app (P0.4). The bounded contexts (§9.1) are NOT registered
-    — app registration happens per context when each is actually built.
+  - INSTALLED_APPS carries the Django minimum-boot set, the outbox
+    infrastructure app (P0.4), and the FIRST bounded context app — identity
+    (P0.6.1, §9.1). Contexts register exactly when their storage foundation
+    lands; no other context is registered yet.
 """
 
 import os
@@ -64,6 +65,8 @@ INSTALLED_APPS = [
     # Cross-cutting infrastructure subsystem (decision A-2) — NOT a context
     # domain app; app_label "outbox".
     "core.outbox.apps.OutboxConfig",
+    # First bounded context (§9.1): identity storage + lifecycle (P0.6.1).
+    "contexts.identity.apps.IdentityConfig",
 ]
 
 MIDDLEWARE = [

@@ -254,7 +254,9 @@ class TestMigrationLifecycle:
         assert "1 PENDING True True" in r.stdout
 
     def test_migrate_zero_removes_table_and_state(self, migrated_db, db_conn):
-        """Reversibility: reverse() drops the table and clears bookkeeping."""
+        """Reversibility: reverse() drops the table and clears its bookkeeping
+        row (P0.6.1 note: identity's record is untouched and remains — zero is
+        app-targeted, not database-wide)."""
         r = migrated_db["manage"]("migrate", "outbox", "zero", "--noinput")
         assert r.returncode == 0, f"{r.stdout}\n{r.stderr}"
         rows = fetchall(
@@ -262,8 +264,12 @@ class TestMigrationLifecycle:
             "SELECT to_regclass('uiap_access.outbox_events')",
         )
         assert rows[0][0] is None
-        book = fetchall(db_conn, "SELECT count(*) FROM uiap_migration.django_migrations")
-        assert book[0][0] == 0
+        book = fetchall(
+            db_conn,
+            "SELECT app FROM uiap_migration.django_migrations ORDER BY app",
+        )
+        # outbox's own record is gone; identity's remains (independent app).
+        assert [r[0] for r in book] == ["identity"]
 
         # Leave the session database in the migrated state for other tests.
         r = migrated_db["manage"]("migrate", "outbox", "--noinput")

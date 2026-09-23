@@ -77,15 +77,37 @@ class TestG2SchemaInventory:
 
 
 class TestG3SingleP0Table:
+    # P0.6.1 (§34.4 group identity) adds the three uiap_identity tables; the
+    # P0 assertion "outbox is the only P0 table" remains true and the known
+    # domain-table set is asserted exactly.
+    KNOWN_UIAP_TABLES = {
+        ("uiap_access", "outbox_events"),          # P0.4
+        ("uiap_identity", "identities"),           # P0.6.1
+        ("uiap_identity", "identity_status_history"),  # P0.6.1
+        ("uiap_identity", "credentials"),          # P0.6.1
+        ("uiap_migration", "django_migrations"),   # infra (A-1)
+    }
+
     def test_exactly_one_uiap_table_outbox_events(self, db_conn):
+        """P0.4 invariant: outbox_events is the only P0-era (pre-domain) table."""
         rows = fetchall(
             db_conn,
             "SELECT table_schema, table_name FROM information_schema.tables "
-            "WHERE table_schema LIKE %s AND table_type = 'BASE TABLE' "
-            "AND table_schema <> 'uiap_migration'",  # infra bookkeeping excluded
-            ("uiap\\_%",),
+            "WHERE table_schema = 'uiap_access' AND table_type = 'BASE TABLE'",
         )
         assert rows == [("uiap_access", "outbox_events")]
+
+    def test_identity_tables_are_the_exact_domain_set(self, db_conn):
+        """P0.6.1: uiap_identity holds exactly the §34.4 group-identity tables."""
+        rows = fetchall(
+            db_conn,
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'uiap_identity' AND table_type = 'BASE TABLE' "
+            "ORDER BY table_name",
+        )
+        assert [r[0] for r in rows] == [
+            "credentials", "identities", "identity_status_history"
+        ]
 
     def test_bookkeeping_table_is_the_infra_exception(self, db_conn):
         # django_migrations is the ONLY infra-schema table (A-1).
@@ -105,8 +127,7 @@ class TestG3SingleP0Table:
         )
         unexpected = [
             r for r in rows
-            if r[:2] not in {("uiap_access", "outbox_events"),
-                             ("uiap_migration", "django_migrations")}
+            if tuple(r[:2]) not in self.KNOWN_UIAP_TABLES
         ]
         assert unexpected == []
 
@@ -230,9 +251,10 @@ class TestG8OwnershipAndDDLNpath:
     def test_outbox_migration_recorded_in_bookkeeping(self, db_conn):
         rows = fetchall(
             db_conn,
-            "SELECT app FROM uiap_migration.django_migrations",
+            "SELECT app FROM uiap_migration.django_migrations ORDER BY app",
         )
-        assert [r[0] for r in rows] == ["outbox"]
+        # P0.4 recorded outbox; P0.6.1 adds identity (targeted migrate).
+        assert [r[0] for r in rows] == ["identity", "outbox"]
 
 
 class TestPublicSchemaHygiene:
