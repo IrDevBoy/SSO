@@ -61,6 +61,22 @@ class TestUuid7:
         assert values == sorted(values), "uuid7 must be monotonic within a process"
 
     def test_concurrent_generation_unique_and_monotonic(self):
+        """8 contended threads × 500 generations:
+
+        * every value is unique, and
+        * the *values* form a strict total order — sorted(values) is
+          strictly increasing, which is exactly what consumers rely on
+          (B-tree insert locality, §11.1) and what can hold regardless of
+          scheduling: the module lock makes each (unix_ts_ms, counter)
+          slot unique, and rand_b < 2^62 < 2^64 never disturbs the
+          (ts, counter) comparison.
+
+        The *collection* order of ``results`` is thread-scheduling noise
+        (local lists overlap in time and are extended in arbitrary
+        order), so it is deliberately NOT asserted.  Deterministic proof
+        that the lock serializes counter *allocation* — generation order
+        — lives in test_contended_counter_allocation_is_deterministic.
+        """
         results: list[uuid.UUID] = []
         lock = threading.Lock()
         barrier = threading.Barrier(8)
@@ -77,9 +93,48 @@ class TestUuid7:
         for t in threads:
             t.join()
         assert len(set(results)) == 8 * 500
-        # The lock serializes generation: the interleaved stream is still total-ordered.
-        ints = [u.int for u in results]
-        assert ints == sorted(ints)
+        ordered = sorted(u.int for u in results)
+        assert all(a < b for a, b in zip(ordered, ordered[1:])), (
+            "distinct UUIDs must be strictly totally orderable "
+            "((ts, counter) slots are unique; rand_b never outranks them)"
+        )
+        assert all(u.version == 7 and u.variant == uuid.RFC_4122 for u in results)
+
+    def test_contended_counter_allocation_is_deterministic(self, monkeypatch):
+        """Frozen clock + 8 contended threads × 256 generations (2048 total,
+        well below the 4096/ms exhaustion bound): the module lock must
+        allocate the counter exactly once per generation, so the extracted
+        rand_a counters are exactly {0 .. 2047} under the single shared
+        timestamp.  This asserts generation order (lock-acquisition order)
+        deterministically — independent of thread scheduling and of the
+        order results are collected in (§11.1: 'monotonic within a node').
+        """
+        monkeypatch.setattr(ids, "_time_ms", lambda: 1_700_000_000_000)
+        monkeypatch.setattr(ids, "_last_ts_ms", 0)
+        monkeypatch.setattr(ids, "_counter", 0)
+        results: list[uuid.UUID] = []
+        lock = threading.Lock()
+        barrier = threading.Barrier(8)
+
+        def worker():
+            barrier.wait()
+            local = [ids.uuid7() for _ in range(256)]
+            with lock:
+                results.extend(local)
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        total = 8 * 256
+        assert len(set(results)) == total
+        assert all((u.int >> 80) == 1_700_000_000_000 for u in results)
+        counters = sorted((u.int >> 64) & 0xFFF for u in results)
+        assert counters == list(range(total)), (
+            "counter allocation must be serialized exactly once per "
+            "generation by the module lock"
+        )
 
     def test_clock_stall_never_regresses_and_counts(self, monkeypatch):
         monkeypatch.setattr(ids, "_last_ts_ms", 1_000)
