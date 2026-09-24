@@ -85,6 +85,7 @@ class TestG3SingleP0Table:
         ("uiap_identity", "identities"),           # P0.6.1
         ("uiap_identity", "identity_status_history"),  # P0.6.1
         ("uiap_identity", "credentials"),          # P0.6.1
+        ("uiap_identity", "password_secrets"),     # P0.6.2-A
         ("uiap_migration", "django_migrations"),   # infra (A-1)
     }
 
@@ -106,7 +107,8 @@ class TestG3SingleP0Table:
             "ORDER BY table_name",
         )
         assert [r[0] for r in rows] == [
-            "credentials", "identities", "identity_status_history"
+            "credentials", "identities", "identity_status_history",
+            "password_secrets",  # P0.6.2-A
         ]
 
     def test_bookkeeping_table_is_the_infra_exception(self, db_conn):
@@ -251,9 +253,9 @@ class TestG8OwnershipAndDDLNpath:
     def test_outbox_migration_recorded_in_bookkeeping(self, db_conn):
         rows = fetchall(
             db_conn,
-            "SELECT app FROM uiap_migration.django_migrations ORDER BY app",
+            "SELECT DISTINCT app FROM uiap_migration.django_migrations ORDER BY app",
         )
-        # P0.4 recorded outbox; P0.6.1 adds identity (targeted migrate).
+        # P0.4 recorded outbox; P0.6.1 adds identity (0001; P0.6.2-A adds 0002).
         assert [r[0] for r in rows] == ["identity", "outbox"]
 
 

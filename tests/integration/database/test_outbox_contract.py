@@ -266,9 +266,10 @@ class TestMigrationLifecycle:
         assert rows[0][0] is None
         book = fetchall(
             db_conn,
-            "SELECT app FROM uiap_migration.django_migrations ORDER BY app",
+            "SELECT DISTINCT app FROM uiap_migration.django_migrations ORDER BY app",
         )
-        # outbox's own record is gone; identity's remains (independent app).
+        # outbox's own records are gone; identity's remain (independent app;
+        # P0.6.2-A: identity has 0001+0002, so assert per-app, not per-row).
         assert [r[0] for r in book] == ["identity"]
 
         # Leave the session database in the migrated state for other tests.
@@ -276,7 +277,10 @@ class TestMigrationLifecycle:
         assert r.returncode == 0, f"{r.stdout}\n{r.stderr}"
 
     def test_re_migrate_is_idempotent(self, migrated_db, db_conn):
-        """A second apply is a no-op (S13 step 13)."""
+        """A re-apply after zero is a full re-apply; a further apply is a no-op
+        (S13 step 13)."""
+        r = migrated_db["manage"]("migrate", "outbox", "--noinput")
+        assert r.returncode == 0, f"{r.stdout}\n{r.stderr}"
         r = migrated_db["manage"]("migrate", "outbox", "--noinput")
         assert r.returncode == 0, f"{r.stdout}\n{r.stderr}"
         assert "No migrations to apply" in r.stdout

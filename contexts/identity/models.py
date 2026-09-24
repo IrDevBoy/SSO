@@ -228,3 +228,76 @@ class Credential(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover - repr convenience
         return f"Credential<{self.pk}:{self.kind}:{self.status}>"
+
+
+class PasswordSecret(models.Model):
+    """§34.4 ``uiap_identity.password_secrets`` — the typed secret table for
+    PASSWORD credentials (§12.0: typed tables touched only by their kind's
+    module).  Hash-only (PHC string); PII class SEC (§10.2: "never readable
+    by anyone including admin"); no hot index (§34.4: "none hot").
+
+    Column provenance (ADR-0003):
+    * source-backed §34.4: ``id`` (uuid v7, app-side), ``credential`` (FK),
+      argon params NOT NULL, ``phc`` (hash + length discipline);
+    * source-backed §10.2: ``status`` (ACTIVE→SUPERSEDED/DISABLED),
+      ``breach_checked_at`` (breached-corpus check timestamp),
+      ``version`` (hash-format version);
+    * source-backed R-04: ``superseded_at`` (the timestamp that implements
+      "keep current + previous, then wipe"), ``created_at``
+      (§34.3 timestamptz convention); ``row_version`` per the MUT rule
+      (§34.3) — transitions here are MUTs.
+    """
+
+    class Status(models.TextChoices):
+        ACTIVE = "ACTIVE"
+        SUPERSEDED = "SUPERSEDED"  # rotation: previous generation (R-04 keeps one)
+        DISABLED = "DISABLED"      # policy-closed (credential revoked etc.)
+
+    id = models.UUIDField(primary_key=True, default=uuid7, editable=False)
+    credential = models.ForeignKey(
+        Credential, on_delete=models.PROTECT, related_name="password_secrets"
+    )
+    phc = models.CharField(max_length=256)  # PHC ≤ ~170 chars at our params
+    # Argon2 params NOT NULL (§34.4) — duplicated from the PHC for queryable
+    # per-hash policy; the PHC string remains the verification source of truth.
+    argon_memory_kib = models.PositiveIntegerField()
+    argon_time_cost = models.PositiveSmallIntegerField()
+    argon_parallelism = models.PositiveSmallIntegerField()
+    version = models.PositiveSmallIntegerField(default=1)  # §10.2 hash-format version
+    status = models.CharField(max_length=10, choices=Status.choices)
+    breach_checked_at = models.DateTimeField(null=True, blank=True)  # §10.2
+    superseded_at = models.DateTimeField(null=True, blank=True)  # R-04 keep-window
+    created_at = models.DateTimeField(db_default=Now())
+    row_version = models.BigIntegerField(default=1)
+
+    class Meta:
+        db_table = 'uiap_identity"."password_secrets'
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(status__in=["ACTIVE", "SUPERSEDED", "DISABLED"]),
+                name="password_secrets_status_check",
+            ),
+            models.CheckConstraint(
+                condition=Q(phc__startswith="$argon2id$"),
+                name="password_secrets_phc_argon2id_check",
+            ),
+            # §34.4: "argon params NOT NULL" is enforced by NOT NULL above;
+            # bounds here keep params queryable and sane (B-check level).
+            models.CheckConstraint(
+                condition=Q(argon_memory_kib__gte=8192) & Q(argon_memory_kib__lte=1_048_576),
+                name="password_secrets_memory_bounds_check",
+            ),
+            models.CheckConstraint(
+                condition=Q(argon_time_cost__gte=1) & Q(argon_time_cost__lte=10),
+                name="password_secrets_time_bounds_check",
+            ),
+            models.CheckConstraint(
+                condition=Q(argon_parallelism__gte=1) & Q(argon_parallelism__lte=8),
+                name="password_secrets_parallelism_bounds_check",
+            ),
+        ]
+        # §34.4 "none hot": deliberately NO index on phc or the params.
+
+    def __str__(self) -> str:  # pragma: no cover - repr convenience
+        # Never include phc (SEC class, §6.6-2).
+        return f"PasswordSecret<{self.pk}:{self.credential_id}:{self.status}>"

@@ -11,7 +11,7 @@ import uuid
 
 import pytest
 
-from contexts.identity import ids, lifecycle
+from contexts.identity import ids, lifecycle, passwords
 from contexts.identity.lifecycle import (
     CREDENTIAL_TRANSITIONS,
     IDENTITY_TRANSITIONS,
@@ -22,6 +22,92 @@ from contexts.identity.models import (
     IdentityHistoryImmutable,
     IdentityStatusHistory,
 )
+from contexts.identity.passwords import PasswordPolicyViolation
+
+
+class TestPasswordPolicy:
+    """§12.2 / FR-004 rules — pure, DB-free."""
+
+    def test_nfc_normalization(self):
+        assert passwords.normalize("cafe\u0301") == "caf\u00e9"
+
+    def test_min_twelve_default(self):
+        with pytest.raises(PasswordPolicyViolation):
+            passwords.validate("short12pw!")
+        assert passwords.validate("long-enough-pw!")
+
+    def test_legacy_floor_eight_only_via_flag(self):
+        assert passwords.validate("12chars!!", legacy_import=True)
+        with pytest.raises(PasswordPolicyViolation):
+            passwords.validate("7chars!", legacy_import=True)
+        with pytest.raises(PasswordPolicyViolation):
+            passwords.validate("12chars!!")  # default tier still requires 12
+
+    def test_max_256(self):
+        with pytest.raises(PasswordPolicyViolation):
+            passwords.validate("a" * 257)
+        assert passwords.validate("a" * 256)
+
+    def test_no_composition_rules(self):
+        # NIST: composition requirements are forbidden — all-lowercase passes.
+        assert passwords.validate("alllowercasepw")
+
+    def test_error_never_contains_the_password(self):
+        secret = "super-secret-hunter2-value"
+        try:
+            passwords.validate("tiny")
+        except PasswordPolicyViolation as exc:
+            assert secret not in str(exc) and "tiny" not in str(exc)
+
+
+class TestArgon2Contract:
+    """§12.2: Argon2id, initial params, PHC as source of truth."""
+
+    def test_initial_params_in_phc(self):
+        phc = passwords.hash_password(passwords.normalize("some-long-password"))
+        assert phc.startswith("$argon2id$")
+        assert passwords.stored_params(phc) == (
+            passwords.INITIAL_MEMORY_KIB, passwords.INITIAL_TIME_COST,
+            passwords.INITIAL_PARALLELISM,
+        )
+        assert passwords.INITIAL_MEMORY_KIB == 19_456
+        assert passwords.INITIAL_TIME_COST == 2
+        assert passwords.INITIAL_PARALLELISM == 1
+
+    def test_verify_roundtrip_and_failure(self):
+        pw = passwords.normalize("correct-horse-battery")
+        phc = passwords.hash_password(pw)
+        assert passwords.verify(phc, pw) is True
+        assert passwords.verify(phc, passwords.normalize("wrong-horse")) is False
+        with pytest.raises(passwords.PasswordVerificationFailed):
+            passwords.verify("$argon2id$v=19$m=1,t=1,p=1$bad", pw)
+
+    def test_needs_rehash_detects_weaker_params(self):
+        weak = (
+            "$argon2id$v=19$m=8192,t=1,p=1$"
+            "c29tZXNhbHRzb21lc2FsdA$"
+            "mZc0p6vXQ0pF0Wj6xS2yB9p1Q0n8yWqO3qFZbJm2K9A"
+        )
+        strong = passwords.hash_password(passwords.normalize("another-good-password"))
+        assert passwords.check_needs_rehash(weak) is True
+        assert passwords.check_needs_rehash(strong) is False
+
+    def test_unicode_nfc_consistent_hashing(self):
+        composed = "caf\u00e9-contrassegno-lungo"
+        decomposed = "cafe\u0301-contrassegno-lungo"
+        phc = passwords.hash_password(passwords.normalize(composed))
+        # The decomposed form normalizes to the same string → verifies.
+        assert passwords.verify(phc, passwords.normalize(decomposed)) is True
+
+    def test_breach_interface_stub_is_fail_open(self):
+        assert passwords.AllowAllBreachDenier().deny("anything") is False
+
+        class AlwaysDeny:
+            def deny(self, normalized_password: str) -> bool:
+                return True
+
+        with pytest.raises(PasswordPolicyViolation):
+            passwords.validate("long-enough-pw!", breach=AlwaysDeny())
 
 IDENTITY_STATUSES = [
     "PROVISIONAL",

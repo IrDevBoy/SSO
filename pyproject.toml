@@ -40,6 +40,7 @@ dependencies = [
     # [Rec/MA]: doc names the server (Valkey), not the Python client; redis-py is MIT-licensed
     # (the doc's license exclusion concerns the Redis *server*, see §51.6).
     "redis>=5,<7",
+    "argon2-cffi>=25.1.0",
 ]
 
 [dependency-groups]
