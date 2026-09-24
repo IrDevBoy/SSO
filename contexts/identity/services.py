@@ -8,10 +8,11 @@ already-updated status and is refused), **validate** against the §11.4 map,
 initial history row in the same transaction.  No silent coercion: forbidden
 transitions raise :class:`TransitionForbidden` from the pure lifecycle map.
 
-Outbox emission is deliberately absent in P0.6.1/2-A (D-8; P0.6.2-B adds the
-emitter inside these same atomic blocks).  Audit tables do not exist yet —
-the INV-08 same-tx append joins this exact boundary in P0.7 (OD-1 deferral
-recorded in ADR-0003).
+P0.6.2-B (ADR-0004): the §29.3 identity/credential/password events are
+emitted via the generic outbox emitter inside these same atomic blocks —
+mutation + history + outbox commit atomically (§34.5).  Audit tables do not
+exist yet — the INV-08 same-tx append joins this exact boundary in P0.7
+(OD-1 deferral recorded in ADR-0003).
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ from __future__ import annotations
 from django.db import models, transaction
 from django.utils import timezone
 
-from contexts.identity import passwords
+from contexts.identity import events, passwords
 from contexts.identity.lifecycle import (
     CREDENTIAL_TRANSITIONS,
     IDENTITY_TRANSITIONS,
@@ -31,10 +32,31 @@ from contexts.identity.models import (
     IdentityStatusHistory,
     PasswordSecret,
 )
+from contexts.identity.ids import uuid7
+from core.outbox.emitter import emit_outbox_event
 
 
 class PasswordInvariantError(Exception):
     """OD-5: a second ACTIVE password credential was attempted under lock."""
+
+
+# §29.3 catalog names for the §11.4 edges that have an approved P0.6.2-B
+# event (BD-3).  Edges WITHOUT an approved catalog name —
+# PROVISIONAL→ABANDONED, ACTIVE→MERGED, SUSPENDED→MERGED — emit nothing:
+# inventing types is forbidden, and those paths belong to future features
+# (provisional sweeper, merge) that will arrive with their own decisions.
+_IDENTITY_EDGE_EVENTS: dict[tuple[str, str], str] = {
+    ("PROVISIONAL", "ACTIVE"): events.IDENTITY_ACTIVATED,
+    ("ACTIVE", "SUSPENDED"): events.IDENTITY_SUSPENDED,
+    ("SUSPENDED", "ACTIVE"): events.IDENTITY_REINSTATED,
+    ("ACTIVE", "LOCKED"): events.IDENTITY_LOCKED,
+    ("LOCKED", "ACTIVE"): events.IDENTITY_UNLOCKED,
+    ("ACTIVE", "PENDING_DELETION"): events.IDENTITY_DELETION_REQUESTED,
+    ("SUSPENDED", "PENDING_DELETION"): events.IDENTITY_DELETION_REQUESTED,
+    ("LOCKED", "PENDING_DELETION"): events.IDENTITY_DELETION_REQUESTED,
+    ("PENDING_DELETION", "ACTIVE"): events.IDENTITY_ACTIVATED,
+    ("PENDING_DELETION", "DELETED"): events.IDENTITY_DELETED,
+}
 
 
 @transaction.atomic
@@ -56,6 +78,16 @@ def create_identity(
         activated_at=timezone.now() if status == Identity.Status.ACTIVE else None,
     )
     IdentityStatusHistory.objects.create(identity=identity, status=identity.status)
+    subject = f"identity:{identity.pk}"
+    emit_outbox_event(
+        event_type=events.IDENTITY_CREATED,
+        allowed_event_types=events.EVENT_TYPES,
+        subject=subject,
+        payload={"identity_id": str(identity.pk), "ts": timezone.now().isoformat()},
+        event_id=uuid7(),
+        partition_key=subject,
+        metadata={"region": identity.region_tag},
+    )
     return identity
 
 
@@ -63,7 +95,8 @@ def create_identity(
 def transition_identity(identity_id, *, to_status: str) -> Identity:
     """Validate + apply one lifecycle edge; append history in the same transaction."""
     identity = Identity.objects.select_for_update().get(pk=identity_id)
-    validate_transition(IDENTITY_TRANSITIONS, identity.status, to_status, kind="identity")
+    from_status = identity.status
+    validate_transition(IDENTITY_TRANSITIONS, from_status, to_status, kind="identity")
     identity.status = to_status
     identity.row_version += 1
     if to_status == Identity.Status.ACTIVE and identity.activated_at is None:
@@ -72,12 +105,38 @@ def transition_identity(identity_id, *, to_status: str) -> Identity:
         identity.closed_at = timezone.now()  # terminal closure (§11.2 closed_at)
     identity.save(update_fields=["status", "row_version", "activated_at", "closed_at"])
     IdentityStatusHistory.objects.create(identity=identity, status=to_status)
+    event_type = _IDENTITY_EDGE_EVENTS.get((from_status, to_status))
+    if event_type is not None:
+        subject = f"identity:{identity.pk}"
+        emit_outbox_event(
+            event_type=event_type,
+            allowed_event_types=events.EVENT_TYPES,
+            subject=subject,
+            payload={
+                "identity_id": str(identity.pk),
+                "from_status": from_status,
+                "to_status": to_status,
+                "ts": timezone.now().isoformat(),
+            },
+            event_id=uuid7(),
+            partition_key=subject,
+            metadata={"region": identity.region_tag},
+        )
     return identity
 
 
 @transaction.atomic
 def transition_credential(credential_id, *, to_status: str) -> Credential:
     """Apply one §12.0 header lifecycle edge (header only — no typed tables)."""
+    identity_pk = (
+        Credential.objects.filter(pk=credential_id)
+        .values_list("identity_id", flat=True)
+        .first()
+    )
+    # BD-8 (ADR-0004): lock the identity row BEFORE the credential row so the
+    # outbox seq allocation for subject identity:<uuid> is serialized under
+    # the aggregate lock — lock order is identity → credential everywhere.
+    identity = Identity.objects.select_for_update().get(pk=identity_pk)
     credential = Credential.objects.select_for_update().get(pk=credential_id)
     validate_transition(CREDENTIAL_TRANSITIONS, credential.status, to_status, kind="credential")
     credential.status = to_status
@@ -91,6 +150,24 @@ def transition_credential(credential_id, *, to_status: str) -> Credential:
     if to_status in ("REVOKED", "EXPIRED"):
         credential.password_secrets.exclude(status="DISABLED").update(
             status="DISABLED", row_version=models.F("row_version") + 1
+        )
+    # §29.3: only the REVOKED edge has a catalog event in P0.6.2-B (BD-3) —
+    # PENDING→ACTIVE / →STALE / →EXPIRED emit nothing.
+    if to_status == Credential.Status.REVOKED:
+        subject = f"identity:{identity.pk}"
+        emit_outbox_event(
+            event_type=events.CREDENTIAL_REVOKED,
+            allowed_event_types=events.EVENT_TYPES,
+            subject=subject,
+            payload={
+                "identity_id": str(identity.pk),
+                "credential_id": str(credential.pk),
+                "kind": credential.kind,
+                "ts": timezone.now().isoformat(),
+            },
+            event_id=uuid7(),
+            partition_key=subject,
+            metadata={"region": identity.region_tag},
         )
     return credential
 
@@ -158,6 +235,12 @@ def set_password(
         _one_active_password_guard(
             identity, exclude_credential_pk=existing.pk if reusable else None
         )
+        # Event bookkeeping (§29.3, ADR-0004): a brand-new credential emits
+        # credential.added; "first verification" follows the existing
+        # P0.6.2-A semantics — the None→set transition of verified_at (the
+        # reused-credential branch below is the only writer).
+        is_new = not reusable
+        first_verification = reusable and existing.verified_at is None
 
         # R-04 history window = current + 1 prior (R-04 "current + 1 prior";
         # §12.2 "history block = previous 1 ... revoke = re-set same password
@@ -232,6 +315,52 @@ def set_password(
             status="ACTIVE",
             breach_checked_at=timezone.now() if breach is not None else None,
         )
+        # §29.3 event set for a password mutation — emission order mirrors
+        # the mutation chronology (ADR-0004): the credential exists → its
+        # verification is recorded → the password changed.  seq is allocated
+        # sequentially by the emitter inside this transaction, so outbox seq
+        # reflects exactly this order.
+        subject = f"identity:{identity.pk}"
+        common = dict(
+            allowed_event_types=events.EVENT_TYPES,
+            subject=subject,
+            partition_key=subject,
+            metadata={"region": identity.region_tag},
+        )
+        if is_new:
+            emit_outbox_event(
+                event_type=events.CREDENTIAL_ADDED,
+                event_id=uuid7(),
+                payload={
+                    "identity_id": str(identity.pk),
+                    "credential_id": str(credential.pk),
+                    "kind": credential.kind,
+                    "ts": timezone.now().isoformat(),
+                },
+                **common,
+            )
+        if first_verification:
+            emit_outbox_event(
+                event_type=events.CREDENTIAL_VERIFIED,
+                event_id=uuid7(),
+                payload={
+                    "identity_id": str(identity.pk),
+                    "credential_id": str(credential.pk),
+                    "kind": credential.kind,
+                    "ts": timezone.now().isoformat(),
+                },
+                **common,
+            )
+        emit_outbox_event(
+            event_type=events.PASSWORD_CHANGED,
+            event_id=uuid7(),
+            payload={
+                "identity_id": str(identity.pk),
+                "credential_id": str(credential.pk),
+                "ts": timezone.now().isoformat(),
+            },
+            **common,
+        )
         credential.refresh_from_db()
         return credential
 
@@ -266,7 +395,10 @@ def verify_password(identity_id, *, raw_password: str) -> tuple[bool, bool]:
 def rehash_password(identity_id, *, raw_password: str) -> bool:
     """§12.2 rehash-on-login: after a *successful* verify, upgrade the stored
     hash to current policy params (new row, previous becomes the kept one).
-    Returns True when an upgrade was actually needed and applied."""
+    Returns True when an upgrade was actually needed and applied.
+
+    Emits NO outbox event: the §29.3 catalog has no ``password.rehashed``
+    type and inventing one is forbidden (BD-3/ADR-0004)."""
     normalized = passwords.normalize(raw_password)
     with transaction.atomic():
         identity = Identity.objects.select_for_update().get(pk=identity_id)

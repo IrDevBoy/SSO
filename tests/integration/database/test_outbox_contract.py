@@ -251,7 +251,14 @@ class TestMigrationLifecycle:
             env=env, capture_output=True, text=True, timeout=60,
         )
         assert r.returncode == 0, r.stderr
-        assert "1 PENDING True True" in r.stdout
+        # P0.6.2-B reconciliation: identity emission now inserts real outbox
+        # rows via the ORM earlier in the shared-session suite, so this row is
+        # no longer guaranteed pk==1. The contract under test is the ORM write
+        # path + column defaults (PENDING / available_at / created_at), not the
+        # first-row PK.
+        pk, state, avail, created = r.stdout.split()
+        assert int(pk) >= 1
+        assert (state, avail, created) == ("PENDING", "True", "True")
 
     def test_migrate_zero_removes_table_and_state(self, migrated_db, db_conn):
         """Reversibility: reverse() drops the table and clears its bookkeeping
