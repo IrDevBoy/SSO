@@ -377,6 +377,17 @@ class TestTemplateConsistency:
         "UIAP_DB_USER": "config/settings/base.py",
         "UIAP_DB_PASSWORD": "config/settings/base.py",
         "UIAP_DB_SSLMODE": "config/settings/base.py",
+        # P0.7 (ADR 0005): relay env contract promoted to ACTIVE — read by the
+        # separate relay process (relay/__main__.py) and its config module
+        # (core/outbox/conf.py). OQ-01 stays OPEN: UIAP_RELAY_SOURCE is a
+        # deployment-verified value, never invented.
+        "UIAP_RELAY_SOURCE": "relay/__main__.py",
+        "UIAP_RELAY_URL": "relay/__main__.py",
+        "UIAP_RELAY_STREAM": "core/outbox/conf.py",
+        "UIAP_RELAY_GROUP": "core/outbox/conf.py",
+        "UIAP_RELAY_CONSUMER": "core/outbox/conf.py",
+        "UIAP_RELAY_CLAIM_BATCH": "core/outbox/conf.py",
+        "UIAP_RELAY_IDLE_MS": "core/outbox/conf.py",
     }
 
     RESERVED_VARS = {
