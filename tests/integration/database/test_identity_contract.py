@@ -188,12 +188,12 @@ class TestIdentityMigrationLifecycle:
             "to_regclass('uiap_identity.identity_status_history')",
         )
         assert all(v is None for v in rows[0])
-        # outbox bookkeeping row survives; identity's is gone
+        # outbox + audit bookkeeping rows survive; identity's is gone
         book = fetchall(
             db_conn,
             "SELECT app FROM uiap_migration.django_migrations ORDER BY app",
         )
-        assert {r[0] for r in book} == {"outbox"}
+        assert {r[0] for r in book} == {"outbox", "audit"}
 
         r = migrated_db["manage"]("migrate", "identity", "--noinput")
         assert r.returncode == 0, f"{r.stdout}\n{r.stderr}"

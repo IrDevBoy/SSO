@@ -275,9 +275,9 @@ class TestMigrationLifecycle:
             db_conn,
             "SELECT DISTINCT app FROM uiap_migration.django_migrations ORDER BY app",
         )
-        # outbox's own records are gone; identity's remain (independent app;
-        # P0.6.2-A: identity has 0001+0002, so assert per-app, not per-row).
-        assert [r[0] for r in book] == ["identity"]
+        # outbox's own records are gone; identity's + audit's remain
+        # (independent apps; P0.7.2 adds audit — ADR-0006).
+        assert [r[0] for r in book] == ["audit", "identity"]
 
         # Leave the session database in the migrated state for other tests.
         r = migrated_db["manage"]("migrate", "outbox", "--noinput")

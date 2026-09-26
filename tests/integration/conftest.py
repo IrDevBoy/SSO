@@ -151,6 +151,8 @@ def migrated_db(bootstrapped_db):
     assert r.returncode == 0, f"migrate outbox failed:\n{r.stdout}\n{r.stderr}"
     r = _manage("migrate", "identity", "--noinput")
     assert r.returncode == 0, f"migrate identity failed:\n{r.stdout}\n{r.stderr}"
+    r = _manage("migrate", "audit", "--noinput")
+    assert r.returncode == 0, f"migrate audit failed:\n{r.stdout}\n{r.stderr}"
     yield {**env, "manage": _manage, "manage_env": run_env, "repo_root": REPO_ROOT}
 
 

@@ -157,7 +157,20 @@ def _targets_of_imports(file: Path, contexts_root: Path) -> list[str]:
 
 
 def cross_context_import_errors(root: Path) -> list[str]:
-    """G-3: no context package imports another context package (AST)."""
+    """G-3: no context package imports another context package (AST).
+
+    Recorded seam exceptions (ADR-0006 §9; §9.4 "the existence and shape of
+    the seam is architecture"):
+    - contexts.identity -> contexts.audit.services: the §9.4 seam operation
+      ``audit.append(event) (transactional)`` — INV-08/§34.5 require the
+      same-transaction append to be a direct in-process call on the audit
+      context's service; the interaction is through that named seam
+      operation only (AuditAppendRequest/append_audit_event), not through
+      the audit context's internals.
+    """
+    allowed_seams = {
+        "identity": ("contexts.audit.services", "contexts.audit.taxonomy"),
+    }
     errors: list[str] = []
     contexts_root = root / "contexts"
     if not contexts_root.is_dir():
@@ -169,7 +182,11 @@ def cross_context_import_errors(root: Path) -> list[str]:
         for target in _targets_of_imports(file, contexts_root):
             parts = target.split(".")
             if len(parts) >= 2 and parts[0] == "contexts" and parts[1] in CANONICAL_CONTEXTS:
-                if parts[1] != importer:
+                seam_ok = any(
+                    target == allowed or target.startswith(allowed + ".")
+                    for allowed in allowed_seams.get(importer, ())
+                )
+                if parts[1] != importer and not seam_ok:
                     errors.append(
                         f"cross-context import: {file.relative_to(root)} -> {target} "
                         f"(context {importer!r} must not import context {parts[1]!r}; §9.4)"

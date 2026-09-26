@@ -284,15 +284,19 @@ class TestNoDomainDatabaseConfiguration:
 
     def test_registered_context_apps_are_exactly_identity(self):
         # P0.6.1: the FIRST bounded context (§9.1 identity) is registered.
-        # The registered context set must be exactly this — no other context
-        # may register before its storage foundation lands.
+        # P0.7.2 (ADR-0006): audit joins as the second context — its storage
+        # foundation (§28) has landed. The registered context set is exactly
+        # these two — no other context may register before its foundation.
         r = run_py(
             "import importlib\ns = importlib.import_module('config.settings.test')\n"
             "print(sorted(a for a in s.INSTALLED_APPS if a.startswith('contexts')))\n",
             {"UIAP_DB_PASSWORD": DUMMY_PASSWORD},
         )
         assert r.returncode == 0, r.stderr
-        assert "['contexts.identity.apps.IdentityConfig']" in r.stdout
+        assert (
+            "['contexts.audit.apps.AuditConfig', "
+            "'contexts.identity.apps.IdentityConfig']" in r.stdout
+        )
 
     def test_outbox_infrastructure_app_registered(self):
         r = run_py(

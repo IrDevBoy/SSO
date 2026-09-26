@@ -67,6 +67,9 @@ INSTALLED_APPS = [
     "core.outbox.apps.OutboxConfig",
     # First bounded context (§9.1): identity storage + lifecycle (P0.6.1).
     "contexts.identity.apps.IdentityConfig",
+    # Audit bounded context (§28; P0.7.2) — the §28 tamper-evident audit
+    # platform closes the INV-08/§34.5 cascade (ADR-0003 OD-1 closure).
+    "contexts.audit.apps.AuditConfig",
 ]
 
 MIDDLEWARE = [

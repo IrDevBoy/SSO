@@ -20,6 +20,8 @@ from __future__ import annotations
 from django.db import models, transaction
 from django.utils import timezone
 
+from contexts.audit.services import AuditAppendError, AuditAppendRequest, append_audit_event
+from contexts.audit.taxonomy import TaxonomyViolation
 from contexts.identity import events, passwords
 from contexts.identity.lifecycle import (
     CREDENTIAL_TRANSITIONS,
@@ -59,6 +61,35 @@ _IDENTITY_EDGE_EVENTS: dict[tuple[str, str], str] = {
 }
 
 
+def _digest(value) -> str:
+    """§28.2 before/after digests: SHA-256 over canonical JSON of the
+    *redacted* state (the state summary below carries ids/statuses only —
+    never secrets, §28.6)."""
+    import hashlib
+    import json
+
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"),
+                   ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+
+def _audit_subject(kind: str, pk) -> dict:
+    return {"subject_kind": kind, "subject_id": str(pk)}
+
+
+def _credential_audit_verb(to_status: str) -> str:
+    """Map a §12.0 credential edge to its §28.3 taxonomy verb — the mapping is
+    total over the closed taxonomy slice (no invented verbs)."""
+    return {
+        "PENDING": "added",
+        "ACTIVE": "verified",
+        "REVOKED": "revoked",
+        "STALE": "revoked",
+        "EXPIRED": "revoked",
+    }[to_status]
+
+
 @transaction.atomic
 def create_identity(
     *,
@@ -88,6 +119,20 @@ def create_identity(
         partition_key=subject,
         metadata={"region": identity.region_tag},
     )
+    # INV-08 / §34.5: the audit append joins the same atomic boundary —
+    # audit failure rolls back the mutation + outbox (ADR-0003 OD-1 closure).
+    append_audit_event(
+        AuditAppendRequest(
+            action="identity.created",
+            actor_kind="SYSTEM_JOB",
+            after_digest=_digest(
+                {"identity_id": str(identity.pk), "type": type,
+                 "status": status, "verification_level": verification_level,
+                 "region_tag": region_tag}
+            ),
+            **_audit_subject("identity", identity.pk),
+        )
+    )
     return identity
 
 
@@ -108,19 +153,35 @@ def transition_identity(identity_id, *, to_status: str) -> Identity:
     event_type = _IDENTITY_EDGE_EVENTS.get((from_status, to_status))
     if event_type is not None:
         subject = f"identity:{identity.pk}"
+        payload = {
+            "identity_id": str(identity.pk),
+            "from_status": from_status,
+            "to_status": to_status,
+            "ts": timezone.now().isoformat(),
+        }
         emit_outbox_event(
             event_type=event_type,
             allowed_event_types=events.EVENT_TYPES,
             subject=subject,
-            payload={
-                "identity_id": str(identity.pk),
-                "from_status": from_status,
-                "to_status": to_status,
-                "ts": timezone.now().isoformat(),
-            },
+            payload=payload,
             event_id=uuid7(),
             partition_key=subject,
             metadata={"region": identity.region_tag},
+        )
+        # INV-08: status changes are always audited (§28.3 Identity bullet:
+        # "status transitions (all edges of §11.4)").
+        append_audit_event(
+            AuditAppendRequest(
+                action=event_type,
+                actor_kind="SYSTEM_JOB",
+                before_digest=_digest(
+                    {"identity_id": str(identity.pk), "status": from_status}
+                ),
+                after_digest=_digest(
+                    {"identity_id": str(identity.pk), "status": to_status}
+                ),
+                **_audit_subject("identity", identity.pk),
+            )
         )
     return identity
 
@@ -139,6 +200,7 @@ def transition_credential(credential_id, *, to_status: str) -> Credential:
     identity = Identity.objects.select_for_update().get(pk=identity_pk)
     credential = Credential.objects.select_for_update().get(pk=credential_id)
     validate_transition(CREDENTIAL_TRANSITIONS, credential.status, to_status, kind="credential")
+    pre_status = credential.status  # INV-08 audit: pre-mutation state
     credential.status = to_status
     credential.row_version += 1
     credential.updated_at = timezone.now()
@@ -152,9 +214,12 @@ def transition_credential(credential_id, *, to_status: str) -> Credential:
             status="DISABLED", row_version=models.F("row_version") + 1
         )
     # §29.3: only the REVOKED edge has a catalog event in P0.6.2-B (BD-3) —
-    # PENDING→ACTIVE / →STALE / →EXPIRED emit nothing.
+    # PENDING→ACTIVE / →STALE / →EXPIRED emit nothing.  §28.3 audits every
+    # credential transition regardless (INV-08: "Every transition audited",
+    # §12.0) — so the audit covers all edges while the outbox stays BD-3-
+    # scoped.
+    subject = f"identity:{identity.pk}"
     if to_status == Credential.Status.REVOKED:
-        subject = f"identity:{identity.pk}"
         emit_outbox_event(
             event_type=events.CREDENTIAL_REVOKED,
             allowed_event_types=events.EVENT_TYPES,
@@ -169,6 +234,22 @@ def transition_credential(credential_id, *, to_status: str) -> Credential:
             partition_key=subject,
             metadata={"region": identity.region_tag},
         )
+    # INV-08 audit (all credential edges; §28.3 Credentials bullet):
+    append_audit_event(
+        AuditAppendRequest(
+            action=f"credential.{_credential_audit_verb(to_status)}",
+            actor_kind="SYSTEM_JOB",
+            before_digest=_digest(
+                {"credential_id": str(credential.pk), "kind": credential.kind,
+                 "status": pre_status}
+            ),
+            after_digest=_digest(
+                {"credential_id": str(credential.pk), "kind": credential.kind,
+                 "status": to_status}
+            ),
+            **_audit_subject("identity", identity.pk),
+        )
+    )
     return credential
 
 
@@ -339,6 +420,19 @@ def set_password(
                 },
                 **common,
             )
+            # INV-08: §28.3 "Credentials: every kind's create/enroll" — the
+            # new PASSWORD credential header is audited alongside its event.
+            append_audit_event(
+                AuditAppendRequest(
+                    action="credential.added",
+                    actor_kind="SYSTEM_JOB",
+                    after_digest=_digest(
+                        {"credential_id": str(credential.pk),
+                         "kind": credential.kind, "status": "PENDING"}
+                    ),
+                    **_audit_subject("identity", identity.pk),
+                )
+            )
         if first_verification:
             emit_outbox_event(
                 event_type=events.CREDENTIAL_VERIFIED,
@@ -360,6 +454,21 @@ def set_password(
                 "ts": timezone.now().isoformat(),
             },
             **common,
+        )
+        # INV-08: §28.3 "Credentials: every kind's create/enroll/verify/rotate/
+        # supersede" — a password set/rotation is the supersede+append of a
+        # secret generation; audited with digests only (never the secret,
+        # §28.6/invariant #10).
+        append_audit_event(
+            AuditAppendRequest(
+                action="password.changed",
+                actor_kind="SYSTEM_JOB",
+                after_digest=_digest(
+                    {"credential_id": str(credential.pk),
+                     "secret_generation": "rotated"}
+                ),
+                **_audit_subject("identity", identity.pk),
+            )
         )
         credential.refresh_from_db()
         return credential
@@ -413,6 +522,21 @@ def rehash_password(identity_id, *, raw_password: str) -> bool:
             return False
         if not passwords.check_needs_rehash(secret.phc):
             return False
+        # §28.3: rehash-on-login is a hash-parameter upgrade of the stored
+        # secret — the §29.3 catalog has no password.rehashed event (BD-3,
+        # no outbox emission), but the §28.3 credential supersede rule still
+        # audits the credential-state change (INV-08).
+        append_audit_event(
+            AuditAppendRequest(
+                action="password.changed",
+                actor_kind="SYSTEM_JOB",
+                after_digest=_digest(
+                    {"credential_id": str(secret.credential_id),
+                     "secret_generation": "rehashed"}
+                ),
+                **_audit_subject("identity", identity.pk),
+            )
+        )
         # Same R-04 bookkeeping as set_password, scoped to this credential.
         PasswordSecret.objects.filter(
             credential=secret.credential, status="ACTIVE"

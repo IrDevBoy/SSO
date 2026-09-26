@@ -86,6 +86,8 @@ class TestG3SingleP0Table:
         ("uiap_identity", "identity_status_history"),  # P0.6.1
         ("uiap_identity", "credentials"),          # P0.6.1
         ("uiap_identity", "password_secrets"),     # P0.6.2-A
+        ("uiap_audit", "audit_events"),            # P0.7.2 (§28, ADR-0006)
+        ("uiap_audit", "audit_roots"),             # P0.7.2 (§28.4 checkpoints)
         ("uiap_migration", "django_migrations"),   # infra (A-1)
     }
 
@@ -255,8 +257,9 @@ class TestG8OwnershipAndDDLNpath:
             db_conn,
             "SELECT DISTINCT app FROM uiap_migration.django_migrations ORDER BY app",
         )
-        # P0.4 recorded outbox; P0.6.1 adds identity (0001; P0.6.2-A adds 0002).
-        assert [r[0] for r in rows] == ["identity", "outbox"]
+        # P0.4 recorded outbox; P0.6.1 adds identity; P0.7.2 adds audit
+        # (ADR-0006 — the §28 storage foundation).
+        assert [r[0] for r in rows] == ["audit", "identity", "outbox"]
 
 
 class TestPublicSchemaHygiene:
